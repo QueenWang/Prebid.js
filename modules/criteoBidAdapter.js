@@ -15,6 +15,14 @@ const PROFILE_ID = 207;
 // Unminified source code can be found in: https://github.com/Prebid-org/prebid-js-external-js-criteo/blob/master/dist/prod.js
 const PUBLISHER_TAG_URL = '//static.criteo.net/js/ld/publishertag.prebid.js';
 
+const FAST_BID_PUBKEY = {
+  "kty": "RSA",
+  "n": "ztQYwCE5BU7T9CDM5he6rKoabstXRmkzx54zFPZkWbK530dwtLBDeaWBMxHBUT55CYyboR_EZ4efghPi3CoNGfGWezpjko9P6p2EwGArtHEeS4slhu_SpSIFMjG6fdrpRoNuIAMhq1Z-Pr_-HOd1pThFKeGFr2_NhtAg-TXAzaU",
+  "e": "AQAB",
+  "alg": "RS256",
+  "use": "sig"
+};
+
 /** @type {BidderSpec} */
 export const spec = {
   code: BIDDER_CODE,
@@ -243,6 +251,68 @@ function createNativeAd(id, payload, callback) {
   </script>`;
 }
 
+function str2ab(str) {
+  var buf = new ArrayBuffer(str.length);
+  var bufView = new Uint8Array(buf);
+  for(var i = 0; i < str.length; ++i) {
+    bufView[i] = str.charCodeAt(i);
+  }
+  return buf;
+}
+
+function cryptoVerify(algo, key, hash, code, callback) {
+  // Standard
+  const standardSubtle = window.crypto && (window.crypto.subtle || window.crypto.webkitSubtle);
+  if (standardSubtle) {
+    window.crypto.subtle.importKey('jwk', key, algo, false, ['verify']).then(cryptoKey => {
+      standardSubtle.verify(algo, cryptoKey, str2ab(atob(hash)), str2ab(code)).then(callback);
+    });
+    return;
+  }
+
+  // IE11
+  if (window.msCrypto) {
+    const eImport = window.msCrypto.subtle.importKey('jwk', str2ab(JSON.stringify(key)), algo, false, ['verify']);
+    eImport.onerror = (evt) => { callback(false); };
+    eImport.oncomplete = (evtKey) => {
+      const cryptoKey = evtKey.target.result;
+      const eVerify = window.msCrypto.subtle.verify(algo, cryptoKey, str2ab(atob(hash)), str2ab(code));
+      eVerify.onerror = (evt) => { callback(false); };
+      eVerify.oncomplete = (evt) => { callback(evt.target.result); };
+    };
+    return;
+  }
+
+  // No crypto lib found
+  callback(undefined);
+}
+
+function validateFastBid(fastBid, callback) {
+  // The value stored must contain the file's encrypted hash as first line
+  const firstLineEnd = fastBid.indexOf('\n');
+  const firstLine = fastBid.substr(0, firstLineEnd).trim();
+  if (firstLine.substr(0, 9) !== '// Hash: ') {
+    utils.logWarn('No hash found in FastBid');
+    callback(false);
+  }
+
+  // Remove the hash part from the locally stored value
+  const fileEncryptedHash = firstLine.substr(9);
+  const publisherTag = fastBid.substr(firstLineEnd + 1);
+
+  // Verify the hash using cryptography
+  const algo = {
+    name: 'RSASSA-PKCS1-v1_5',
+    hash: 'SHA-256',
+  };
+  try {
+    cryptoVerify(algo, FAST_BID_PUBKEY, fileEncryptedHash, publisherTag, callback);
+  } catch (e) {
+    utils.logWarn('Failed to verify Criteo FastBid');
+    callback(undefined);
+  }
+}
+
 /**
  * @return {boolean}
  */
@@ -250,13 +320,19 @@ function tryGetCriteoFastBid() {
   try {
     const fastBid = localStorage.getItem('criteo_fast_bid');
     if (fastBid !== null) {
-      eval(fastBid); // eslint-disable-line no-eval
-      return true;
+      validateFastBid(fastBid, (valid) => {
+        if (valid === false) {
+          utils.logWarn('Invalid Criteo FastBid found');
+          localStorage.removeItem('criteo_fast_bid');
+        } else {
+          utils.logInfo('Using Criteo FastBid');
+          eval(fastBid); // eslint-disable-line no-eval
+        }
+      });
     }
   } catch (e) {
     // Unable to get fast bid
   }
-  return false;
 }
 
 registerBidder(spec);
