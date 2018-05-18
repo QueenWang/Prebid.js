@@ -264,16 +264,22 @@ function cryptoVerify(algo, key, hash, code, callback) {
   // Standard
   const standardSubtle = window.crypto && (window.crypto.subtle || window.crypto.webkitSubtle);
   if (standardSubtle) {
-    window.crypto.subtle.importKey('jwk', key, algo, false, ['verify']).then(cryptoKey => {
-      standardSubtle.verify(algo, cryptoKey, str2ab(atob(hash)), str2ab(code)).then(callback);
-    });
+    window.crypto.subtle.importKey('jwk', key, algo, false, ['verify']).then(
+      (cryptoKey) => {
+        standardSubtle.verify(algo, cryptoKey, str2ab(atob(hash)), str2ab(code)).then(
+          callback,
+          (error) => { callback(false); },
+        );
+      },
+      (error) => { callback(undefined); },
+    );
     return;
   }
 
   // IE11
   if (window.msCrypto) {
     const eImport = window.msCrypto.subtle.importKey('jwk', str2ab(JSON.stringify(key)), algo, false, ['verify']);
-    eImport.onerror = (evt) => { callback(false); };
+    eImport.onerror = (evt) => { callback(undefined); };
     eImport.oncomplete = (evtKey) => {
       const cryptoKey = evtKey.target.result;
       const eVerify = window.msCrypto.subtle.verify(algo, cryptoKey, str2ab(atob(hash)), str2ab(code));
